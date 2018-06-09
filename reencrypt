@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# Copyright (C) 2018, Christopher A. Snapp <snappca@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# enable unbound variable checking
+set -u
+
+# dependency check
+[[ "$(which gpg)" ]] || { echo 'ERROR: gpg command is not available'; exit 1; }
+
+prog='reencrypt'
+version=18.06
+files=( )
+recipients=( )
+recipients_file=
+
+# print command usage
+print_usage () {
+    cat <<EOF
+Usage: $prog [-hv] [--help] [-r recipients-file] file1 file2 file3...
+
+Options:
+
+    -h, --help  display this help and exit
+
+    -r file
+        the csv file containing recipients in username@example.com,LONGKEYID format
+
+    -v  display version information and exit
+
+EOF
+}
+
+# print error message followed by usage and exit
+error () {
+    echo -e "\nERROR: $1\n" >&2
+    print_usage >&2
+    exit 1
+}
+
+# process arguments
+for arg in $@; do
+    case "$arg" in
+        -h | --help)
+            print_usage
+            exit 0
+            ;;
+        -r)
+            recipients_file=( '-r' )
+            ;;
+        -v)
+            echo $prog $version
+            exit 0
+            ;;
+         *)
+            if [[ "$recipients_file" == '-r' ]]; then
+                [[ ! -r "$arg" ]] && error 'cannot read provided recipients file'
+                recipients_file=$arg
+            else
+                [[ ! -r "$arg" ]] && error 'cannot read provided file to reencrypt'
+                files+=( "$arg" )
+            fi
+            ;;
+    esac
+done
+
+# sanity check
+[[ ${#files[*]} -eq 0 ]] && error 'no files provided to reencrypt'
+[[ "$recipients_file" == '-r' ]] && error 'no recipients file provided'
+
+# collect recipients from file
+while read recipient_key; do
+    recipients+=( "0x$recipient_key" )
+done < <(awk -F, '/@/{print $2}' "$recipients_file")
+
+# sanity check
+[[ -z "$recipients" ]] && error 'no recipients provided'
+
+for file in ${files[*]}; do
+    echo -e "\n\nINFO: Decrypting ${file}\n"
+
+    content="$(gpg --decrypt "$file")"
+
+    [[ -z "$content" ]] && error 'no content decrypted '
+
+    cat <<EOF
+
+Re-Encrypting ${file} with the following recipients:
+
+$(cat "$recipients_file")
+EOF
+
+    gpg --encrypt --armor --batch --yes --with-colons --no-comments --trust-model always --group team="${recipients[*]}" --recipient team --output "$file" <<<"$content" 2>&1 | sed 's/^/    /'
+done
+
+exit 0
